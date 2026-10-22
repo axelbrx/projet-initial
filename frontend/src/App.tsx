@@ -1,10 +1,17 @@
+import { BrowserRouter, Routes, Route } from 'react-router'
+import Dashboard from './pages/Dashboard'
+import Fixes from './pages/Fixes'
+
 
 function App() {
 
   return (
-    <div>
-      Frontend
-    </div>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/fixes" element={<Fixes />} />
+      </Routes>
+    </BrowserRouter>
   )
 }
 
