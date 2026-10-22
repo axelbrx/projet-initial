@@ -26,5 +26,5 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src", "components/dashboard"]
+  "include": ["src", "src/components/dashboard"]
 }
