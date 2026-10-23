@@ -8,7 +8,7 @@ export default function ApprovalPanel() {
     <Card className="h-full">
       <CardHeader>
         <CardTitle className="text-2xl text-foreground">
-          Approval queue
+          Approval Queue
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-1 items-center justify-center">
