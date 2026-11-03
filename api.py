@@ -64,7 +64,7 @@ DatabaseDown = getattr(kit, "DatabaseUnavailable", psycopg.OperationalError)
 # Application
 # ======================================================================
 
-app = FastAPI(title="Data Hygiene Watchdog API", version="0.1.0")
+app = FastAPI(title="Data Hygiene Watchdog API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -175,13 +175,49 @@ def list_issues(
     day: int | None = Query(None, ge=1),
     status: str | None = None,
 ):
+    # table_name is the second part of issue_key (feed:table:column:check).
+    #
+    # action says what was done about the issue, in this order of priority:
+    #   approval    a fix waits for a person
+    #   hand-off    volume problem handed to the Data Sync Monitor
+    #   quarantined rows of this issue are in quarantine
+    #   ticket      a ticket exists for this issue_key
+    #   auto-fixed  a fix was applied
+    #   approved    a person approved a fix (the simulator applies it later)
+    # It is NULL when nothing was done (yet).
     query = f"""
         SELECT i.issue_id, i.batch_id, b.feed_name, b.batch_date,
                (b.batch_date - %(start)s::date + 1) AS day,
-               i.issue_key, i.check_type, i.column_name, i.affected_rows,
+               i.issue_key, split_part(i.issue_key, ':', 2) AS table_name,
+               i.check_type, i.column_name, i.affected_rows,
                i.description, i.status, i.created_at,
                (SELECT count(*) FROM fixes f WHERE f.issue_id = i.issue_id)
-                   AS fix_count
+                   AS fix_count,
+               CASE
+                 WHEN EXISTS (SELECT 1 FROM fixes f
+                              WHERE f.issue_id = i.issue_id
+                                AND f.status = 'awaiting_approval')
+                   THEN 'approval'
+                 WHEN i.check_type = 'volume'
+                      AND EXISTS (SELECT 1 FROM hand_offs h
+                                  WHERE h.batch_id = i.batch_id)
+                   THEN 'hand-off'
+                 WHEN EXISTS (SELECT 1 FROM quarantine q
+                              WHERE q.issue_id = i.issue_id
+                                AND q.released_at IS NULL)
+                   THEN 'quarantined'
+                 WHEN EXISTS (SELECT 1 FROM tickets t
+                              WHERE t.issue_key = i.issue_key)
+                   THEN 'ticket'
+                 WHEN EXISTS (SELECT 1 FROM fixes f
+                              WHERE f.issue_id = i.issue_id
+                                AND f.status = 'applied')
+                   THEN 'auto-fixed'
+                 WHEN EXISTS (SELECT 1 FROM fixes f
+                              WHERE f.issue_id = i.issue_id
+                                AND f.status = 'approved')
+                   THEN 'approved'
+               END AS action
         FROM issues i
         JOIN batches b ON b.batch_id = i.batch_id
         WHERE {ONE_DAY_OR_ALL}
@@ -199,12 +235,14 @@ def find_fixes(day=None, status=None, issue_id=None):
     query = f"""
         SELECT f.fix_id, f.issue_id, f.batch_id, b.feed_name, b.batch_date,
                (b.batch_date - %(start)s::date + 1) AS day,
+               i.check_type, i.description AS issue_description,
                f.table_name, f.column_name, f.fix_type, f.record_id,
                f.before_value, f.after_value, f.reasoning, f.status,
                f.decided_by, f.decided_on, f.applied_on, f.rejection_reason,
                f.created_at
         FROM fixes f
         LEFT JOIN batches b ON b.batch_id = f.batch_id
+        LEFT JOIN issues i ON i.issue_id = f.issue_id
         WHERE {ONE_DAY_OR_ALL}
           AND (%(status)s::text IS NULL OR f.status = %(status)s::text)
           AND (%(issue_id)s::bigint IS NULL
@@ -228,6 +266,42 @@ def list_fixes(
 def approval_queue():
     """Fixes waiting for a person (status awaiting_approval)."""
     return find_fixes(status="awaiting_approval")
+
+
+@app.get("/api/approval-groups")
+def approval_groups():
+    """Fixes waiting for a person, one entry per issue.
+
+    One card in the UI = one issue, even if it holds hundreds of fixes
+    (340 postcodes). Fixes that belong to no issue are not listed here:
+    they stay available one by one in /api/approvals.
+    """
+    query = """
+        SELECT g.issue_id, i.issue_key, i.check_type,
+               i.description AS issue_description,
+               b.feed_name, b.batch_date,
+               (b.batch_date - %(start)s::date + 1) AS day,
+               g.table_name, g.column_name, g.fix_types, g.fix_count,
+               s.record_id AS sample_record_id,
+               s.before_value AS sample_before,
+               s.after_value AS sample_after,
+               s.reasoning
+        FROM (
+            SELECT issue_id, min(fix_id) AS first_fix_id,
+                   min(table_name) AS table_name,
+                   min(column_name) AS column_name,
+                   array_agg(DISTINCT fix_type) AS fix_types,
+                   count(*) AS fix_count
+            FROM fixes
+            WHERE status = 'awaiting_approval' AND issue_id IS NOT NULL
+            GROUP BY issue_id
+        ) g
+        JOIN issues i ON i.issue_id = g.issue_id
+        LEFT JOIN batches b ON b.batch_id = i.batch_id
+        JOIN fixes s ON s.fix_id = g.first_fix_id
+        ORDER BY g.issue_id DESC
+    """
+    return run_query(query)
 
 
 class Decision(BaseModel):
@@ -276,6 +350,54 @@ def reject_fix(fix_id: int, body: Decision):
     """Reject a fix. The agent can read the reason the same day."""
     return record_decision(
         fix_id, "rejected", body.decided_by, body.rejection_reason
+    )
+
+
+def record_issue_decision(issue_id, new_status, decided_by, reason):
+    """Approve or reject every fix of one issue that waits for a person.
+
+    This is what an approval card does: one click, all its fixes.
+    """
+    with open_db() as conn:
+        updated = conn.execute(
+            """
+            UPDATE fixes
+            SET status = %s, decided_by = %s, rejection_reason = %s
+            WHERE issue_id = %s AND status = 'awaiting_approval'
+            RETURNING fix_id
+            """,
+            (new_status, decided_by, reason, issue_id),
+        ).fetchall()
+        if updated:
+            return {
+                "issue_id": issue_id,
+                "status": new_status,
+                "fixes_updated": len(updated),
+            }
+
+        # Nothing changed: unknown issue, or nothing left to decide.
+        issue = conn.execute(
+            "SELECT 1 FROM issues WHERE issue_id = %s", (issue_id,)
+        ).fetchone()
+
+    if issue is None:
+        raise HTTPException(404, f"Issue {issue_id} not found")
+    raise HTTPException(
+        409, f"Issue {issue_id} has no fix awaiting approval"
+    )
+
+
+@app.post("/api/issues/{issue_id}/approve")
+def approve_issue(issue_id: int, body: Decision):
+    """Approve all the fixes of an issue. Applied the next morning."""
+    return record_issue_decision(issue_id, "approved", body.decided_by, None)
+
+
+@app.post("/api/issues/{issue_id}/reject")
+def reject_issue(issue_id: int, body: Decision):
+    """Reject all the fixes of an issue, with one reason for all."""
+    return record_issue_decision(
+        issue_id, "rejected", body.decided_by, body.rejection_reason
     )
 
 
@@ -499,6 +621,15 @@ def kpis(day: int | None = Query(None, ge=1)):
           (SELECT count(*) FROM hand_offs h
              JOIN batches b ON b.batch_id = h.batch_id
              WHERE {ONE_DAY_OR_ALL}) AS hand_offs,
+          (SELECT count(DISTINCT f.issue_id) FROM fixes f
+             JOIN batches b ON b.batch_id = f.batch_id
+             WHERE f.status = 'applied' AND {ONE_DAY_OR_ALL})
+             AS issues_auto_fixed,
+          (SELECT count(DISTINCT f.issue_id) FROM fixes f
+             JOIN batches b ON b.batch_id = f.batch_id
+             WHERE f.status = 'awaiting_approval'
+               AND f.issue_id IS NOT NULL AND {ONE_DAY_OR_ALL})
+             AS approvals_pending,
           (SELECT avg(data_health) FROM sim_results
              WHERE (%(d)s::date IS NULL OR sim_day = %(d)s::date))
              AS data_health
