@@ -33,8 +33,7 @@ export default function ApprovalPanel({
       >
         {isEmpty ? (
           <div className="flex flex-col items-center gap-2 text-center text-muted-foreground">
-            <CheckCircle2 className="size-8" />
-            <p>No approval in queue, everything is good!</p>
+            <p>No approval in queue.</p>
           </div>
         ) : (
           <AnimatePresence>

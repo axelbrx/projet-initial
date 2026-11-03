@@ -7,7 +7,6 @@ type Kpi = {
   type: 'number' | 'percentage' | 'string'
 }
 
-// Props for the KpiContainer component : contains data to display in the KPI cards
 type KpiContainerProps = {
   data: Kpi[]
 }
