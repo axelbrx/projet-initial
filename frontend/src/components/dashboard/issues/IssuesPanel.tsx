@@ -10,6 +10,7 @@ export default function IssuesPanel() {
   const issuesData = getIssuesForDay(day)
 
   const runAgent = () => {
+    //TEMP, needs to be changed with actual agent run logic.
     console.log('Run agent clicked')
   }
 

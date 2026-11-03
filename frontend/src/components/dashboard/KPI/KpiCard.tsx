@@ -1,4 +1,3 @@
-
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 type KpiCardProps = {
@@ -9,7 +8,6 @@ type KpiCardProps = {
 }
 
 export function KpiCard({ title, value, type }: KpiCardProps) {
-
   // Format the value based on the type
   const formattedValue =
     type === 'percentage'

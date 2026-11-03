@@ -1,21 +1,19 @@
 import { BrowserRouter, Routes, Route } from 'react-router'
+import AppLayout from '@/layouts/AppLayout'
 import Dashboard from '@/pages/Dashboard'
-import Fixes from './pages/Fixes'
+import Fixes from '@/pages/Fixes'
+import AgentLog from '@/pages/AgentLog'
 
-
-function App() {
-
+export default function App() {
   return (
-    <div className="min-h-screen bg-gray-100">
-      <BrowserRouter>
-        <Routes>
+    <BrowserRouter>
+      <Routes>
+        <Route element={<AppLayout />}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/fixes" element={<Fixes />} />
-        </Routes>
-      </BrowserRouter>
-    </div>
-
+          <Route path="/agent-log" element={<AgentLog />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
   )
 }
-
-export default App

@@ -1,14 +1,12 @@
-import { Badge } from "@/components/ui/badge";
+import { Badge } from '@/components/ui/badge'
 import {
   Table,
   TableBody,
-  TableCaption,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table";
-
+} from '@/components/ui/table'
 
 export default function IssuesTable({ data }: { data: any[] }) {
   return (
@@ -42,5 +40,5 @@ export default function IssuesTable({ data }: { data: any[] }) {
         )}
       </TableBody>
     </Table>
-  );
+  )
 }
